@@ -36,6 +36,7 @@ etc/guix-subs/          copied to /etc/guix-subs on the VM
   template.scm          the template system it builds: Xfce + qubes-guix
   packages              extra packages to build or fetch nightly
   beto-ssh.pub          your SSH public key (not in git; see .example)
+install.sh              installs the VM from the Guix installer's shell
 ```
 
 The examples below call the machine `guix-subs.example.lan`. In
@@ -78,42 +79,48 @@ Adjust the storage names (`local-lvm`, `local`), the bridge, and add
 `,tag=N` to `--net0` for a VLAN.
 
 The empty disk falls through to the ISO on first boot. Once Guix is installed,
-detach the ISO (`qm set $VMID --ide2 none,media=cdrom`), so a broken GRUB
-can't land a later reboot in the installer.
+detach the ISO (section 2), so a broken GRUB can't land a later reboot in the
+installer.
 
 ## 2. Install Guix
 
-Use the noVNC console for the installer.
+`install.sh` installs the final system from the installer's shell: no
+graphical installer and no reconfigure. **It wipes the disk** (`/dev/sda`).
 
-1. Run the graphical installer: a minimal system, no desktop, user `beto`,
-   guided partitioning, ext4. An SSH server is useful.
-2. **Label the root filesystem** `guix-root`, because config.scm mounts it by
-   label. The installer doesn't ask, so after the install:
+1. On the Proxmox host (or any machine the VM can reach), serve a checkout of
+   this repository, with your SSH public key added:
    ```sh
-   sudo e2label "$(findmnt -no SOURCE /)" guix-root
+   git clone https://github.com/BetoHydroxyButyrate/guix-subs  # or scp it over
+   cp ~/.ssh/id_ed25519.pub guix-subs/etc/guix-subs/beto-ssh.pub   # your key
+   cd guix-subs && python3 -m http.server 8000
    ```
-   Or copy the installer's `bootloader` and `file-systems` (UUID based) from
-   its `/etc/config.scm` into config.scm instead.
-3. Get the files onto it: clone this repository, or serve it from your
-   workstation with `python3 -m http.server` and `wget` each file. noVNC has
-   no clipboard. Your SSH public key is on your workstation, not the VM, so
-   fetch it the same way:
+   Proxmox has `python3`. If its firewall is on, open port 8000 for now.
+2. In the VM's noVNC console, choose the non-graphical install and open a
+   shell. The network comes up by itself. Then, with the Proxmox host at
+   192.168.3.11 for example:
    ```sh
-   sudo mkdir -p /etc/guix-subs
-   sudo cp etc/guix-subs/* /etc/guix-subs/
-   wget http://WORKSTATION:8000/id_ed25519.pub     # served from your ~/.ssh
-   sudo cp id_ed25519.pub /etc/guix-subs/beto-ssh.pub
+   wget http://192.168.3.11:8000/install.sh
+   sh install.sh http://192.168.3.11:8000
    ```
-   If you enabled SSH in the installer and set a password, `scp` from the
-   workstation works too.
-4. Pull and reconfigure, then reboot:
-   ```sh
-   sudo -H guix pull
-   sudo guix system reconfigure /etc/guix-subs/config.scm
-   sudo reboot
-   ```
-   The first pull warns that the qubes, beto and nonguix channels are
-   "not trusted". That's harmless: root's Guix doesn't know them yet.
+   It fetches the files, partitions `/dev/sda` (a BIOS boot partition and an
+   ext4 root labelled `guix-root`), copies the files to `/etc/guix-subs`
+   and runs `guix system init`. A different disk is the second argument;
+   a disk that already has partitions needs `FORCE=1 sh install.sh …`.
+3. Stop the HTTP server, detach the ISO
+   (`qm set $VMID --ide2 none,media=cdrom`), and `reboot`.
+4. Root's password is empty, which is fine only until you log in once on
+   the console (`qm terminal $VMID`) and run `passwd`.
+
+The system is built by the installer's Guix, so the serial console and the
+guest agent work from the first boot. The nightly job does root's first
+`guix pull`.
+
+**By hand instead:** run the graphical installer (minimal system, user `beto`,
+ext4), label the root `guix-root` (`sudo e2label "$(findmnt -no SOURCE /)"
+guix-root`), put this directory and your key in `/etc/guix-subs`, then
+`sudo -H guix pull && sudo guix system reconfigure /etc/guix-subs/config.scm`
+and reboot. The first pull warns that the qubes, beto and nonguix channels
+are "not trusted"; that's harmless.
 
 After the reboot there's no desktop or password login. Use:
 
@@ -235,8 +242,9 @@ qube on guix-subs' VLAN. AppVMs reach it through their netvm.
   more memory than a template has. The kernel killed `cargo` in a template.
   List them in `packages` and lock the template to the server's commit.
 - **Guix 1.5 details:** `dhcp-client-service-type` is gone, so use
-  `dhcpcd-service-type`. The serial getty and the QEMU guest agent only work
-  after the first reconfigure. Before then, use noVNC.
+  `dhcpcd-service-type`. With the graphical installer, the serial getty and
+  the QEMU guest agent only work after the first reconfigure (install.sh
+  avoids this). Before then, use noVNC.
 - **`guix describe` shows the pulled Guix, not the system config.** After
   adding a channel to config.scm and reconfiguring, `sudo -H guix pull` before
   it shows up.
