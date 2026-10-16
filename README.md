@@ -38,13 +38,16 @@ etc/guix-subs/          copied to /etc/guix-subs on the VM
   build-qubes.sh        nightly job (mcron, 02:00): pull, build, publish the commit
   template.scm          the template system it builds: Xfce + qubes-guix
   packages              extra packages to build or fetch nightly
+  install-cert.sh       installs the TLS certificate the Proxmox host pushes in
   beto-ssh.pub          your SSH public key (not in git; see .example)
 mk-subs.sh              on Proxmox: creates and starts the VM
 install.sh              installs the VM from the Guix installer's shell
+pve/                    on the Proxmox host: the TLS certificate (section 6)
 ```
 
 The examples below call the machine `guix-subs.example.lan`. In
-`config.scm`, set nginx's `server_name` to the name your qubes will use, and
+`config.scm`, set `%host-name` to the name your qubes will use (nginx's
+`server_name`, and the certificate's), and
 change the user (`beto`), the timezone and the locale to suit.
 
 ## 1. The Proxmox VM
@@ -225,6 +228,60 @@ UpdateVM. So the UpdateVM must reach guix-subs: the `qubes.UpdatesProxy` target
 in dom0's policy, with the `updates-proxy` service on. Here that's a firewall
 qube on guix-subs' VLAN. AppVMs reach it through their netvm.
 
+## 6. HTTPS
+
+nginx serves the same things on 443 as on 80. The certificate comes from the
+Proxmox host, which already has your Route 53 credentials for its own ACME
+(Datacenter > ACME, a DNS plugin with API "aws"). `pve/guix-subs-cert` reads
+them from there, gets a certificate for guix-subs with
+[lego](https://go-acme.github.io/lego/) (DNS-01, so nothing needs to reach
+the VM from outside), and pipes the key and chain into the VM through the
+QEMU guest agent, where `/etc/guix-subs-install-cert` checks them, installs
+them in `/etc/guix-subs-tls` and reloads nginx. So:
+
+- guix-subs never holds the Route 53 credentials, which can change your
+  whole zone;
+- the certificate has its own key, not the Proxmox node's (that one guards
+  the Proxmox web UI);
+- until the first push, nginx uses a self-signed placeholder, and port 80
+  works as before. Nothing redirects to HTTPS.
+
+On the Proxmox host, as root:
+
+```sh
+apt install lego
+install -m 755 pve/guix-subs-cert /usr/local/sbin/
+install -m 600 pve/guix-subs-cert.default /etc/default/guix-subs-cert
+install -m 644 pve/guix-subs-cert.service pve/guix-subs-cert.timer /etc/systemd/system/
+$EDITOR /etc/default/guix-subs-cert         # VMID, DOMAIN, ACME_EMAIL, PLUGIN
+systemctl daemon-reload
+systemctl start guix-subs-cert              # the first certificate, now
+journalctl -u guix-subs-cert                # "pushed the certificate ..."
+systemctl enable --now guix-subs-cert.timer # then daily; renews 30 days ahead
+```
+
+It pushes only when the certificate changed, and retries a push that failed
+(the VM down, say) at the next run. `FORCE=1 guix-subs-cert` pushes anyway,
+e.g. after reinstalling the VM.
+
+Check it from a qube:
+
+```sh
+curl -s https://guix-subs.example.com/nix-cache-info
+```
+
+The name has to be the certificate's: a real name in your Route 53 zone,
+which your LAN's DNS resolves to the VM. A `.lan` name like the examples
+above can't get a public certificate.
+
+Then switch the qubes' `url` lines (dom0's `qubes-guix-substitutes`, and
+`#:extra-substitute-urls` in existing qubes' config.scm) to `https://`.
+tinyproxy then only tunnels, and `/channel-commits` is protected in transit.
+
+The IAM user behind the plugin needs only `route53:ChangeResourceRecordSets`
+and `route53:ListResourceRecordSets` on your zone, plus `route53:GetChange`
+and `route53:ListHostedZonesByName`.
+
 ## What we learned
 
 - **Same commits or no hit.** A substitute matches only an identical
@@ -257,7 +314,7 @@ qube on guix-subs' VLAN. AppVMs reach it through their netvm.
   `Bad Read-Header-Line header: #<eof>`, which fits tinyproxy mishandling
   Guix's pipelined narinfo requests, though nginx being down may also have
   played a part. It hasn't recurred since nginx was fixed. If it does, serve
-  guix-subs over HTTPS (see below).
+  guix-subs over HTTPS (section 6).
 - **Big packages belong here, not in templates.** IceCat (and Firefox) need far
   more memory than a template has. The kernel killed `cargo` in a template.
   List them in `packages` and lock the template to the server's commit.
@@ -279,13 +336,6 @@ qube on guix-subs' VLAN. AppVMs reach it through their netvm.
 
 ## To do
 
-- **HTTPS.** A Let's Encrypt certificate for the name, issued with a DNS
-  challenge so the VM needs no inbound access, and nginx on 443. Then tinyproxy
-  only tunnels, as it does for bordeaux. It also protects `/channel-commits` and `/guix-commit`:
-  substitutes are signed and nars are hash-checked, so plain HTTP is safe
-  for them, but nothing signs the commits. Channel authentication still
-  rejects a forged commit, yet someone on the path could hold the qubes at
-  an old, genuine one.
 - **Building every commit, not nightly:** Cuirass, if nightly turns out too
   coarse.
 - **More build power:** `guix offload` to a Guix VM on the TrueNAS box (40

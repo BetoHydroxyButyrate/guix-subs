@@ -1,0 +1,8 @@
+[Unit]
+Description=Get or renew guix-subs' TLS certificate and push it into the VM
+After=network-online.target pve-cluster.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/guix-subs-cert

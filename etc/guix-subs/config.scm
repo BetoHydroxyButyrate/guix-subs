@@ -12,6 +12,10 @@
 (use-modules (gnu) (guix channels))
 (use-service-modules base mcron networking shepherd ssh virtualization web)
 (use-package-modules version-control)
+
+;; The name qubes use for this machine: nginx's server_name, and the
+;; certificate's (see README.md, HTTPS).
+(define %host-name "guix-subs.zepherin.com")
 (define %sudoers-specification
   (plain-file "sudoers" "\
 root	ALL=(ALL) ALL
@@ -56,9 +60,10 @@ beto	ALL=(ALL) NOPASSWD: ALL
 
 ;; A caching proxy for the upstream substitute servers, next to guix publish,
 ;; all on port 80:
-;;   http://guix-subs.zepherin.com/           this machine's store (guix publish)
-;;   http://guix-subs.zepherin.com/bordeaux/  bordeaux.guix.gnu.org, cached here
-;;   http://guix-subs.zepherin.com/ci/        ci.guix.gnu.org, cached here
+;;   http://HOST/           this machine's store (guix publish)
+;;   http://HOST/bordeaux/  bordeaux.guix.gnu.org, cached here
+;;   http://HOST/ci/        ci.guix.gnu.org, cached here
+;; and the same over https once the Proxmox host has pushed a certificate.
 ;; Cached substitutes keep their upstream signatures, so clients need no
 ;; new key for them (bordeaux's and ci's are authorized by default); only
 ;; this machine's own builds need its key.
@@ -139,6 +144,61 @@ beto	ALL=(ALL) NOPASSWD: ALL
   #~(job "0 4 * * 0"
          "/run/current-system/profile/bin/guix gc --delete-generations=1m -F 150G"))
 
+;; nginx's server: the same locations on port 80 and, with TLS? true, on
+;; 443 with the certificate in /etc/guix-subs-tls, which the Proxmox host
+;; pushes in (pve/guix-subs-cert, install-cert.sh). Until the first push
+;; that's a self-signed placeholder (tls-placeholder below), so nginx can
+;; start; port 80 keeps working throughout.
+(define %tls-dir "/etc/guix-subs-tls")
+
+(define (substitute-server listen tls?)
+  (nginx-server-configuration
+   (listen listen)
+   (server-name (list %host-name "_"))
+   (ssl-certificate (and tls? (string-append %tls-dir "/fullchain.pem")))
+   (ssl-certificate-key (and tls? (string-append %tls-dir "/privkey.pem")))
+   (locations
+    (append
+     (map (lambda (u) (cached-upstream (car u) (cdr u)))
+          %upstreams)
+     (list
+      ;; The commits of the last good nightly build (build-qubes.sh): every
+      ;; channel's, and Guix's alone.
+      (published-file "channel-commits")
+      (published-file "guix-commit")
+      (nginx-location-configuration
+       (uri "/")
+       (body '("proxy_pass http://127.0.0.1:8080;"))))))))
+
+;; A self-signed certificate in /etc/guix-subs-tls if there's none yet.
+(define tls-placeholder
+  (simple-service
+   'tls-placeholder activation-service-type
+   #~(let ((dir #$%tls-dir))
+       (unless (file-exists? dir) (mkdir dir))
+       (chmod dir #o755)
+       (unless (file-exists? (string-append dir "/fullchain.pem"))
+         (system* #$(file-append (specification->package "openssl")
+                                 "/bin/openssl")
+                  "req" "-x509" "-newkey" "rsa:2048" "-nodes" "-days" "3650"
+                  "-subj" (string-append "/CN=" #$%host-name)
+                  "-keyout" (string-append dir "/privkey.pem")
+                  "-out" (string-append dir "/fullchain.pem"))
+         (chmod (string-append dir "/privkey.pem") #o600)))))
+
+;; /etc/guix-subs-install-cert: install-cert.sh, with openssl and herd.
+(define install-cert
+  (program-file
+   "guix-subs-install-cert"
+   #~(begin
+       (setenv "PATH"
+               (string-append #$(file-append (specification->package "openssl")
+                                             "/bin")
+                              ":/run/current-system/profile/bin"
+                              ":/run/current-system/profile/sbin"))
+       (apply execl #$(local-file "install-cert.sh" #:recursive? #t)
+              "install-cert.sh" (cdr (command-line))))))
+
 (operating-system
   (host-name "guix-subs")
   (sudoers-file %sudoers-specification)
@@ -196,23 +256,12 @@ beto	ALL=(ALL) NOPASSWD: ALL
                       " levels=1:2 keys_zone=guix:50m inactive=180d"
                       " max_size=1000g use_temp_path=off;"))
                     (server-blocks
-                     (list (nginx-server-configuration
-                            (listen '("80"))
-                            (server-name '("guix-subs.zepherin.com" "_"))
-                            (locations
-                             (append
-                              (map (lambda (u) (cached-upstream (car u) (cdr u)))
-                                   %upstreams)
-                              (list
-                                   ;; The commits of the last good nightly
-                                   ;; build (build-qubes.sh): every
-                                   ;; channel's, and Guix's alone.
-                                   (published-file "channel-commits")
-                                   (published-file "guix-commit")
-                                   (nginx-location-configuration
-                                    (uri "/")
-                                    (body '("proxy_pass http://127.0.0.1:8080;")))))))))))
+                     (list (substitute-server '("80") #f)
+                           (substitute-server '("443 ssl") #t)))))
           dns-ready-service
+          tls-placeholder
+          (simple-service 'install-cert etc-service-type
+                          (list (list "guix-subs-install-cert" install-cert)))
           ;; The cache directory, writable by nginx's workers.
           (simple-service 'substitute-cache-dir activation-service-type
                           #~(begin

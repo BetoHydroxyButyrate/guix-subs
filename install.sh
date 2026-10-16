@@ -22,7 +22,7 @@ src=${1:-}
 disk=${2:-/dev/sda}
 [ -n "$src" ] || die "usage: sh install.sh http://SERVER:PORT [DISK]"
 src=${src%/}
-files="config.scm build-qubes.sh template.scm packages beto-ssh.pub"
+files="config.scm build-qubes.sh install-cert.sh template.scm packages beto-ssh.pub"
 
 [ "$(id -u)" = 0 ] || die "run as root (the installer's shell is root)"
 [ -b "$disk" ] || die "$disk: no such disk"

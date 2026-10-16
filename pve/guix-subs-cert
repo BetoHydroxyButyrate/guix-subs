@@ -1,0 +1,83 @@
+#!/bin/sh
+# guix-subs-cert — on the Proxmox host, as root: get or renew guix-subs'
+# TLS certificate from Let's Encrypt with lego (DNS-01 through Route 53),
+# using the credentials of the host's own ACME DNS plugin, and push it into
+# the VM through the QEMU guest agent whenever it changed. The VM never
+# holds the Route 53 credentials, and the certificate has its own key, not
+# the Proxmox node's.
+#
+# Settings in /etc/default/guix-subs-cert (see guix-subs-cert.default):
+#   VMID        the guix-subs VM
+#   DOMAIN      the certificate's name, e.g. guix-subs.example.com
+#   ACME_EMAIL  the Let's Encrypt account's contact address
+#   PLUGIN      the Route 53 plugin's ID under Datacenter > ACME (default:
+#               the first DNS plugin with API aws)
+# Run daily by guix-subs-cert.timer; lego renews within 30 days of expiry.
+# FORCE=1 pushes the certificate even if it hasn't changed.
+set -eu
+
+prog=${0##*/}
+die() { echo "$prog: $*" >&2; exit 1; }
+
+conf=/etc/default/guix-subs-cert
+# shellcheck disable=SC1090
+[ -f "$conf" ] && . "$conf"
+[ -n "${VMID:-}" ] || die "set VMID in $conf"
+[ -n "${DOMAIN:-}" ] || die "set DOMAIN in $conf"
+[ -n "${ACME_EMAIL:-}" ] || die "set ACME_EMAIL in $conf"
+PLUGIN=${PLUGIN:-}
+command -v lego >/dev/null || die "lego isn't installed: apt install lego"
+
+state=/var/lib/guix-subs-cert
+mkdir -p "$state"
+chmod 700 "$state"
+
+# The Route 53 credentials, from the Proxmox ACME DNS plugin: its 'data' is
+# base64 of KEY=VALUE lines (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY).
+cfg=/etc/pve/priv/acme/plugins.cfg
+[ -r "$cfg" ] || die "no $cfg: add a Route 53 DNS plugin under Datacenter > ACME first"
+data=$(awk -v want="$PLUGIN" '
+    function done() { if (dns && api == "aws" && data != "" && (want == "" || id == want)) { print data; found = 1; exit } }
+    /^[a-z]+:/ { done(); dns = ($1 == "dns:"); id = $2; api = ""; data = ""; next }
+    $1 == "api"  { api = $2 }
+    $1 == "data" { data = $2 }
+    END { if (!found) done() }' "$cfg")
+[ -n "$data" ] || die "no Route 53 (api aws) DNS plugin${PLUGIN:+ named $PLUGIN} in $cfg"
+creds=$(printf '%s' "$data" | base64 -d 2>/dev/null) ||
+    die "couldn't decode the plugin's data in $cfg"
+val() {   # val KEY: KEY's value in the plugin's data, without quotes
+    printf '%s\n' "$creds" | sed -n "s/^$1=//p" | head -n1 |
+        sed "s/^['\"]//; s/['\"]\$//"
+}
+AWS_ACCESS_KEY_ID=$(val AWS_ACCESS_KEY_ID)
+AWS_SECRET_ACCESS_KEY=$(val AWS_SECRET_ACCESS_KEY)
+[ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ] ||
+    die "the plugin's data has no AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY"
+AWS_REGION=${AWS_REGION:-us-east-1}     # Route 53 is global; lego wants one
+export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION
+
+# Get the certificate, or renew it when it's due.
+crt=$state/certificates/$DOMAIN.crt     # the chain (lego bundles the issuer)
+key=$state/certificates/$DOMAIN.key
+set -- --accept-tos --email "$ACME_EMAIL" --dns route53 \
+       --domains "$DOMAIN" --path "$state"
+if [ -f "$crt" ]; then
+    lego "$@" renew --days 30
+else
+    lego "$@" run
+fi
+[ -f "$crt" ] && [ -f "$key" ] || die "lego left no certificate in $state/certificates"
+
+# Push it into the VM if it changed since the last good push. A VM that's
+# down is retried at the next run.
+sum=$(cat "$key" "$crt" | sha256sum | cut -d' ' -f1)
+if [ "${FORCE:-}" != 1 ] && [ "$sum" = "$(cat "$state/pushed" 2>/dev/null || true)" ]; then
+    exit 0
+fi
+out=$(cat "$key" "$crt" |
+      qm guest exec "$VMID" --pass-stdin 1 -- /etc/guix-subs-install-cert 2>&1) ||
+    die "couldn't run /etc/guix-subs-install-cert in VM $VMID: $out"
+printf '%s\n' "$out" | grep -q '"exitcode"[[:space:]]*:[[:space:]]*0' ||
+    die "installing it in VM $VMID failed: $out"
+echo "$sum" > "$state/pushed"
+echo "$prog: pushed the certificate for $DOMAIN to VM $VMID"
