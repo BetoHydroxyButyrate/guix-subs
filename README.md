@@ -36,6 +36,7 @@ etc/guix-subs/          copied to /etc/guix-subs on the VM
   template.scm          the template system it builds: Xfce + qubes-guix
   packages              extra packages to build or fetch nightly
   beto-ssh.pub          your SSH public key (not in git; see .example)
+mk-subs.sh              on Proxmox: creates and starts the VM
 install.sh              installs the VM from the Guix installer's shell
 ```
 
@@ -62,21 +63,15 @@ On the Proxmox host, with the Guix installer ISO uploaded to an ISO storage
 (get it from guix.gnu.org and check its signature):
 
 ```sh
-VMID=120
-qm create $VMID --name guix-subs --ostype l26 \
-  --machine q35 --bios seabios --cpu host --cores 16 \
-  --memory 32768 --balloon 0 \
-  --scsihw virtio-scsi-single \
-  --scsi0 local-lvm:400,discard=on,iothread=1,ssd=1 \
-  --net0 virtio,bridge=vmbr0 \
-  --ide2 local:iso/guix-system-install-1.5.0.x86_64-linux.iso,media=cdrom \
-  --boot 'order=ide2;scsi0' \
-  --serial0 socket --agent enabled=1
-qm start $VMID
+./mk-subs.sh 120                                   # VMID 120, named guix-subs
+./mk-subs.sh 120 guix-subs local-lvm local:iso '' 30   # other storages, VLAN 30
 ```
 
-Adjust the storage names (`local-lvm`, `local`), the bridge, and add
-`,tag=N` to `--net0` for a VLAN.
+`mk-subs.sh VMID [HOST] [DISK-STORAGE] [ISO-STORAGE] [ISO-NAME] [VLAN]`
+runs the `qm create` with the settings above, starts the VM, and prints the
+next steps. The defaults are `guix-subs`, `local-zfs`, `proxmox:iso`, the
+1.5.0 installer ISO and no VLAN; an empty argument takes the default. Edit
+the script for a different bridge, size or core count.
 
 The VM boots the ISO while it's attached, so a reset during the install lands
 back in the installer. Once Guix is installed, detach the ISO (section 2) and
