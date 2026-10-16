@@ -38,8 +38,9 @@ etc/guix-subs/          copied to /etc/guix-subs on the VM
   beto-ssh.pub          your SSH public key (not in git; see .example)
 ```
 
-`config.scm` names the host `guix-subs.zepherin.com` (nginx `server_name`) and
-the user `beto`. Change those, the timezone and the locale to suit.
+The examples below call the machine `guix-subs.example.lan`. In
+`config.scm`, set nginx's `server_name` to the name your qubes will use, and
+change the user (`beto`), the timezone and the locale to suit.
 
 ## 1. The Proxmox VM
 
@@ -76,6 +77,10 @@ qm start $VMID
 Adjust the storage names (`local-lvm`, `local`), the bridge, and add
 `,tag=N` to `--net0` for a VLAN.
 
+The empty disk falls through to the ISO on first boot. Once Guix is installed,
+detach the ISO (`qm set $VMID --ide2 none,media=cdrom`), so a broken GRUB
+can't land a later reboot in the installer.
+
 ## 2. Install Guix
 
 Use the noVNC console for the installer.
@@ -91,12 +96,16 @@ Use the noVNC console for the installer.
    its `/etc/config.scm` into config.scm instead.
 3. Get the files onto it: clone this repository, or serve it from your
    workstation with `python3 -m http.server` and `wget` each file. noVNC has
-   no clipboard.
+   no clipboard. Your SSH public key is on your workstation, not the VM, so
+   fetch it the same way:
    ```sh
    sudo mkdir -p /etc/guix-subs
    sudo cp etc/guix-subs/* /etc/guix-subs/
-   sudo cp ~/.ssh/id_ed25519.pub /etc/guix-subs/beto-ssh.pub   # your key
+   wget http://WORKSTATION:8000/id_ed25519.pub     # served from your ~/.ssh
+   sudo cp id_ed25519.pub /etc/guix-subs/beto-ssh.pub
    ```
+   If you enabled SSH in the installer and set a password, `scp` from the
+   workstation works too.
 4. Pull and reconfigure, then reboot:
    ```sh
    sudo -H guix pull
@@ -123,8 +132,9 @@ tail -f /var/log/qubes-builds.log
 The first run pulls Guix and all the channels, builds the Qubes agents and the
 template system, then everything in `packages`. Most of it comes as
 substitutes, and firefox-esr comes from nonguix's farm. Later runs are at
-02:00 nightly; a weekly job at 04:00 Sunday collects garbage down to 150 GB
-free.
+02:00 nightly. A weekly job at 04:00 Sunday deletes root's Guix generations
+older than a month and runs `guix gc -F 150G`: it collects garbage until at
+least 150 GiB of the disk are free.
 
 Each result is kept by a symlink in `/var/guix/gcroots/qubes-builds/`. Any
 symlink there is a GC root, and it's replaced only once the new build
@@ -138,7 +148,10 @@ Get the signing key the qubes need:
 cat /etc/guix/signing-key.pub      # public: fine to copy around
 ```
 
-Never copy `signing-key.sec` anywhere.
+Never copy `signing-key.sec` anywhere. Every qube that trusts the public key
+accepts any binary this machine signs, so guix-subs is part of every such
+qube's trusted base: keep it patched, reachable only from your LAN, and with
+SSH by key only.
 
 ## 4. Checks
 
@@ -179,6 +192,10 @@ key (public-key (ecc (curve Ed25519) (q #…#)))     # /etc/guix/signing-key.pub
   commit, pulls and reconfigures.
 - **Moving to a newer build later** is that same command:
   `qubes-guix-update --guix-commit server`.
+- **If the qube is ahead of the server** (it pulled a newer Guix itself, or
+  the server's last few nights failed), moving to the server's commit is a
+  downgrade, and `guix pull` refuses it. Add `--allow-downgrades`, or wait
+  for the server's next good build.
 
 qubes-guix lists these servers *before* bordeaux and ci, which stay as the
 fallback, so guix-subs being down only makes things slower.
@@ -237,7 +254,11 @@ qube on guix-subs' VLAN. AppVMs reach it through their netvm.
   channel.
 - **HTTPS.** A Let's Encrypt certificate for the name, issued with a DNS
   challenge so the VM needs no inbound access, and nginx on 443. Then tinyproxy
-  only tunnels, as it does for bordeaux.
+  only tunnels, as it does for bordeaux. It also protects `/guix-commit`:
+  substitutes are signed and nars are hash-checked, so plain HTTP is safe
+  for them, but nothing signs the commit. Channel authentication still
+  rejects a forged commit, yet someone on the path could hold the qubes at
+  an old, genuine one.
 - **Building every commit, not nightly:** Cuirass, if nightly turns out too
   coarse.
 - **More build power:** `guix offload` to a Guix VM on the TrueNAS box (40
