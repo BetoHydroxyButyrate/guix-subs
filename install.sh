@@ -35,7 +35,8 @@ if ls "$part"[0-9]* >/dev/null 2>&1 && [ "${FORCE:-}" != 1 ]; then
 fi
 
 echo "== fetching files from $src"
-tmp=/tmp/guix-subs
+# Not under /tmp: cow-store mounts the new system's /tmp over it.
+tmp=/run/guix-subs
 rm -rf "$tmp" && mkdir -p "$tmp"
 for f in $files; do
     wget -q -O "$tmp/$f" "$src/etc/guix-subs/$f" || die "couldn't fetch $f"
@@ -66,9 +67,9 @@ mkfs.ext4 -q -F -L guix-root "${part}2"
 echo "== installing"
 mount "${part}2" /mnt
 # The store being built lives on the target disk, not in the installer's RAM.
-herd start cow-store /mnt
 mkdir -p /mnt/etc/guix-subs
 cp -p "$tmp"/* /mnt/etc/guix-subs/
+herd start cow-store /mnt
 guix system init /mnt/etc/guix-subs/config.scm /mnt
 
 echo "== done: detach the ISO in Proxmox, then reboot"
