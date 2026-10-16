@@ -44,7 +44,18 @@ grep -q '^ssh-' "$tmp/beto-ssh.pub" ||
     die "beto-ssh.pub doesn't look like an SSH public key"
 chmod +x "$tmp/build-qubes.sh"
 
+# Release the disk: an earlier attempt may have left /mnt mounted (with
+# cow-store on it), or the installer may have turned on a swap partition.
+herd stop cow-store >/dev/null 2>&1 || true
+umount -R /mnt 2>/dev/null || true
+for p in "$part"[0-9]*; do
+    [ -b "$p" ] || continue
+    swapoff "$p" 2>/dev/null || true
+    umount "$p" 2>/dev/null || true
+done
+
 echo "== partitioning $disk (everything on it is lost)"
+wipefs -q -a "$disk"
 parted -s "$disk" -- mklabel gpt \
     mkpart grub 1MiB 3MiB set 1 bios_grub on \
     mkpart root ext4 3MiB 100%

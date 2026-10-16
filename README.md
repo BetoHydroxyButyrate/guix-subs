@@ -70,7 +70,7 @@ qm create $VMID --name guix-subs --ostype l26 \
   --scsi0 local-lvm:400,discard=on,iothread=1,ssd=1 \
   --net0 virtio,bridge=vmbr0 \
   --ide2 local:iso/guix-system-install-1.5.0.x86_64-linux.iso,media=cdrom \
-  --boot 'order=scsi0;ide2' \
+  --boot 'order=ide2;scsi0' \
   --serial0 socket --agent enabled=1
 qm start $VMID
 ```
@@ -78,9 +78,9 @@ qm start $VMID
 Adjust the storage names (`local-lvm`, `local`), the bridge, and add
 `,tag=N` to `--net0` for a VLAN.
 
-The empty disk falls through to the ISO on first boot. Once Guix is installed,
-detach the ISO (section 2), so a broken GRUB can't land a later reboot in the
-installer.
+The VM boots the ISO while it's attached, so a reset during the install lands
+back in the installer. Once Guix is installed, detach the ISO (section 2) and
+it boots from the disk.
 
 ## 2. Install Guix
 
