@@ -1,0 +1,17 @@
+# Packages guix-subs builds (or fetches) nightly, so the qubes get them from
+# here: names or name@version, any number per line. Unknown ones are
+# skipped. Keep it in step with dom0's qubes-guix-packages.
+git
+yadm
+icecat
+emacs
+vim
+alacritty
+htop
+keepassxc
+curl
+openssh
+beto-appvm-defaults
+fish
+# nonguix (substitutes.nonguix.org):
+firefox-esr
