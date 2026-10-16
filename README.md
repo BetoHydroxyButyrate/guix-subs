@@ -220,7 +220,12 @@ qube on guix-subs' VLAN. AppVMs reach it through their netvm.
   once, at start-up. Before DHCP had provided DNS, its config check failed,
   `nginx-init` failed, and nginx stayed down, with nothing in its error log
   (Shepherd's log, `/var/log/messages`, had it). The `dns-ready` service makes
-  it wait until `bordeaux.guix.gnu.org` resolves.
+  it wait until every upstream host resolves. Waiting for bordeaux alone
+  wasn't enough: IPv6 (with its DNS server) came up six seconds before the
+  IPv4 lease, and nginx resolves with `AI_ADDRCONFIG`, so ci, which has no
+  IPv6 address, didn't resolve yet while bordeaux did. `dns-ready` now asks
+  the same way. Shepherd doesn't retry a failed start: `sudo herd start
+  nginx` if it happens.
 - **`guix build --root` won't replace a link.** The second night failed with
   "File exists". Roots are now plain symlinks in `/var/guix/gcroots/…`, swapped
   after a good build.

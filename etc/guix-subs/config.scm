@@ -81,18 +81,32 @@ beto	ALL=(ALL) NOPASSWD: ALL
 
 (define %substitute-cache "/var/cache/nginx/guix")
 
-;; nginx resolves the proxy_pass host names once, when it starts: at boot
-;; that can be before DHCP has given us a DNS server, and then nginx (and
-;; nginx-init, its config check) fail and stay down. So nginx waits for
-;; this: done once bordeaux.guix.gnu.org resolves (up to 2 minutes).
+;; The upstream substitute servers nginx caches, by location.
+(define %upstreams
+  '(("/bordeaux/" . "bordeaux.guix.gnu.org")
+    ("/ci/" . "ci.guix.gnu.org")))
+
+;; nginx resolves the proxy_pass host names once, when it starts, and
+;; fails (Shepherd doesn't retry) if one doesn't resolve. At boot, IPv6
+;; (router advertisement, with its DNS server) can come up seconds before
+;; the IPv4 lease, and nginx asks getaddrinfo with AI_ADDRCONFIG: until
+;; there's an IPv4 address, an IPv4-only host (ci) "doesn't exist", though
+;; bordeaux (which has IPv6) resolves. So nginx waits for this: done once
+;; EVERY upstream host resolves the way nginx asks (up to 2 minutes).
 (define wait-for-dns
   (program-file "wait-for-dns"
-                #~(let loop ((i 0))
-                    (cond ((false-if-exception
-                            (getaddrinfo "bordeaux.guix.gnu.org" "https"))
-                           (exit 0))
-                          ((< i 120) (sleep 1) (loop (+ i 1)))
-                          (else (exit 1))))))
+                #~(begin
+                    (define (resolves? host)
+                      (false-if-exception
+                       (getaddrinfo host "https" AI_ADDRCONFIG)))
+                    (define (all-resolve? hosts)
+                      (or (null? hosts)
+                          (and (resolves? (car hosts))
+                               (all-resolve? (cdr hosts)))))
+                    (let loop ((i 0))
+                      (cond ((all-resolve? '#$(map cdr %upstreams)) (exit 0))
+                            ((< i 120) (sleep 1) (loop (+ i 1)))
+                            (else (exit 1)))))))
 
 (define dns-ready-service
   (simple-service 'dns-ready shepherd-root-service-type
@@ -178,9 +192,10 @@ beto	ALL=(ALL) NOPASSWD: ALL
                             (listen '("80"))
                             (server-name '("guix-subs.zepherin.com" "_"))
                             (locations
-                             (list (cached-upstream "/bordeaux/"
-                                                    "bordeaux.guix.gnu.org")
-                                   (cached-upstream "/ci/" "ci.guix.gnu.org")
+                             (append
+                              (map (lambda (u) (cached-upstream (car u) (cdr u)))
+                                   %upstreams)
+                              (list
                                    ;; The Guix commit of the last good
                                    ;; nightly build (build-qubes.sh).
                                    (nginx-location-configuration
@@ -190,7 +205,7 @@ beto	ALL=(ALL) NOPASSWD: ALL
                                             "add_header Cache-Control no-cache;")))
                                    (nginx-location-configuration
                                     (uri "/")
-                                    (body '("proxy_pass http://127.0.0.1:8080;"))))))))))
+                                    (body '("proxy_pass http://127.0.0.1:8080;")))))))))))
           dns-ready-service
           ;; The cache directory, writable by nginx's workers.
           (simple-service 'substitute-cache-dir activation-service-type
