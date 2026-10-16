@@ -236,6 +236,10 @@ qube on guix-subs' VLAN. AppVMs reach it through their netvm.
 - **Big packages belong here, not in templates.** IceCat (and Firefox) need far
   more memory than a template has. The kernel killed `cargo` in a template.
   List them in `packages` and lock the template to the server's commit.
+- **One getty on the serial console.** `%base-services` already runs an
+  agetty on the kernel's `console=` device. A second one on `ttyS0` made the
+  two fight: logins worked but bash had no job control ("cannot set terminal
+  process group").
 - **Guix 1.5 details:** `dhcp-client-service-type` is gone, so use
   `dhcpcd-service-type`. With the graphical installer, the serial getty and
   the QEMU guest agent only work after the first reconfigure (install.sh

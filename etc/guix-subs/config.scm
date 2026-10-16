@@ -135,6 +135,8 @@ beto	ALL=(ALL) NOPASSWD: ALL
 
   ;; Proxmox serial console (qm set VMID -serial0 socket): boot messages and
   ;; a login on ttyS0, for 'qm terminal VMID' and the xterm.js console.
+  ;; %base-services already runs an agetty on the console= device: don't
+  ;; add another, or the two fight over ttyS0 (no job control).
   (kernel-arguments (cons "console=ttyS0,115200" %default-kernel-arguments))
 
   (users (cons (user-account
@@ -149,8 +151,6 @@ beto	ALL=(ALL) NOPASSWD: ALL
    (append
     (list (service dhcpcd-service-type)
           (service qemu-guest-agent-service-type)   ; qm guest exec
-          (service agetty-service-type
-                   (agetty-configuration (tty "ttyS0") (baud-rate "115200")))
           (service openssh-service-type
                    (openssh-configuration
                     (password-authentication? #f)
