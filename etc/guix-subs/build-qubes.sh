@@ -7,8 +7,10 @@
 # symlink there is a GC root), replaced only once the new build succeeded:
 # 'guix gc' keeps the latest good builds and 'guix publish' serves them.
 # Once the template system (and the packages) have built, the Guix commit
-# they were built from is published as /var/lib/qubes-builds/guix-commit (nginx: /guix-commit), for
-# qubes-guix-update --guix-commit server and qubes-guix-create.
+# they were built from are published in /var/lib/qubes-builds: every
+# channel's in channel-commits (nginx: /channel-commits), Guix's alone in
+# guix-commit (/guix-commit), for qubes-guix-update --guix-commit server
+# and qubes-guix-create.
 set -u
 export HOME=/root
 export PATH=/run/current-system/profile/bin:/run/current-system/profile/sbin
@@ -64,17 +66,31 @@ if [ -f "$dir/packages" ]; then
         fi
     done
 fi
-# Publish the Guix commit last, once the packages are built too: a qube
-# that locks to it then finds everything here. Not if the template failed.
+# Publish the commits last, once the packages are built too: a qube that
+# locks to them then finds everything here. Not if the template failed.
+#   channel-commits  every channel, one "NAME COMMIT" per line, in
+#                    'guix describe' order (guix first)
+#   guix-commit      just Guix's, for qubes-guix versions that only read it
+# Commits only, no URLs or introductions: a qube applies them to its own
+# channel definitions, so it still authenticates each channel itself.
+publish() {   # publish FILE: stdin -> /var/lib/qubes-builds/FILE, atomically
+    cat > "/var/lib/qubes-builds/$1.new" &&
+    chmod 644 "/var/lib/qubes-builds/$1.new" &&
+    mv "/var/lib/qubes-builds/$1.new" "/var/lib/qubes-builds/$1"
+}
 if [ "$template_ok" = 1 ]; then
-    commit=$("$guix" describe |
-             awk '/^  guix /{g=1; next} /^  [^ ]/{g=0} g && /commit:/{print $2; exit}')
+    mkdir -p /var/lib/qubes-builds
+    commits=$("$guix" describe |
+              awk '/^  [^ ]/ {name = $1}
+                   /^    commit: / && name != "" {print name, $2; name = ""}')
+    commit=$(printf '%s\n' "$commits" | awk '$1 == "guix" {print $2}')
     if [ -n "$commit" ]; then
-        mkdir -p /var/lib/qubes-builds
-        printf '%s\n' "$commit" > /var/lib/qubes-builds/guix-commit.new
-        chmod 644 /var/lib/qubes-builds/guix-commit.new
-        mv /var/lib/qubes-builds/guix-commit.new /var/lib/qubes-builds/guix-commit
-        log "published guix commit $commit"
+        printf '%s\n' "$commits" | publish channel-commits
+        printf '%s\n' "$commit" | publish guix-commit
+        log "published channel commits:"
+        printf '%s\n' "$commits" | sed 's/^/    /'
+    else
+        log "no guix commit in 'guix describe': nothing published"
     fi
 fi
 log "done"

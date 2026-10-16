@@ -16,15 +16,18 @@ It does four things:
   `ci.guix.gnu.org` and keeps what it has fetched, so the second qube to need
   a package gets it from the LAN. These keep the upstream signatures, so they
   need no extra key.
-- **Publishes the Guix commit of its last good build** at `/guix-commit`.
-  Substitutes only match when the qube uses the *same* Guix commit, so qubes
-  lock to that commit: `qubes-guix-update --guix-commit server`.
+- **Publishes the channel commits of its last good build** at
+  `/channel-commits`: one `NAME COMMIT` line per channel (guix, qubes, beto,
+  nonguix). Substitutes only match when the qube uses the *same* commits, so
+  qubes lock to them: `qubes-guix-update --guix-commit server`. `/guix-commit`
+  still has Guix's alone, for qubes-guix versions that only read that.
 
 ```
 http://guix-subs.example.lan/              this machine's store (guix publish, :8080)
 http://guix-subs.example.lan/bordeaux/     bordeaux.guix.gnu.org, cached
 http://guix-subs.example.lan/ci/           ci.guix.gnu.org, cached
-http://guix-subs.example.lan/guix-commit   Guix commit of the last good nightly build
+http://guix-subs.example.lan/channel-commits  channel commits of the last good nightly build
+http://guix-subs.example.lan/guix-commit      Guix's commit alone
 ```
 
 ## Files
@@ -140,9 +143,15 @@ least 150 GiB of the disk are free.
 
 Each result is kept by a symlink in `/var/guix/gcroots/qubes-builds/`. Any
 symlink there is a GC root, and it's replaced only once the new build
-succeeds. When the template and packages are done, the run writes the Guix
-commit to `/var/lib/qubes-builds/guix-commit`. A night whose template build
-fails publishes nothing, so the last good commit stays.
+succeeds. When the template and packages are done, the run writes the
+channel commits to `/var/lib/qubes-builds/channel-commits`, and Guix's to
+`guix-commit` next to it. A night whose template build fails publishes
+nothing, so the last good commits stay.
+
+They're commits only, no URLs or channel introductions. A qube applies them
+to its own channel definitions, so it still authenticates every channel
+itself: guix-subs can choose which commit a qube builds, but can't point it
+at another repository.
 
 Get the signing key the qubes need:
 
@@ -160,7 +169,7 @@ SSH by key only.
 ```sh
 curl -s http://guix-subs.example.lan/nix-cache-info             # guix publish
 curl -sI http://guix-subs.example.lan/bordeaux/nix-cache-info | grep -i x-cache   # MISS, then HIT
-curl -s http://guix-subs.example.lan/guix-commit                 # after a good run
+curl -s http://guix-subs.example.lan/channel-commits             # after a good run
 sudo herd status nginx guix-publish dns-ready
 ls -l /var/guix/gcroots/qubes-builds/
 ```
@@ -194,6 +203,15 @@ key (public-key (ecc (curve Ed25519) (q #…#)))     # /etc/guix/signing-key.pub
   commit, pulls and reconfigures.
 - **Moving to a newer build later** is that same command:
   `qubes-guix-update --guix-commit server`.
+- **What gets locked:** every channel the qube shares with guix-subs (guix,
+  qubes, nonguix, beto), from `/channel-commits`, recorded as
+  `#:channel-commits` in its config.scm. Then the Qubes agents and firefox-esr
+  come from here too, not just what's in Guix proper. A qubes-guix older
+  than this reads only `/guix-commit` and locks Guix alone.
+- **Working on qubes-guix itself:** add `#:follow-head '(qubes)` to the qube's
+  `qubes-operating-system` form and run `qubes-guix-update -r`. The qubes
+  channel follows its branch; the other channels stay locked. Remove it to
+  go back to the server's qubes commit.
 - **If the qube is ahead of the server** (it pulled a newer Guix itself, or
   the server's last few nights failed), moving to the server's commit is a
   downgrade, and `guix pull` refuses it. Add `--allow-downgrades`, or wait
@@ -209,10 +227,12 @@ qube on guix-subs' VLAN. AppVMs reach it through their netvm.
 
 ## What we learned
 
-- **Same commit or no hit.** A substitute matches only an identical derivation,
-  so the same Guix commit (and the same commits of the other channels).
-  guix-subs following the latest Guix while templates follow it separately
-  rarely matches. Hence `/guix-commit` and `--guix-commit server`.
+- **Same commits or no hit.** A substitute matches only an identical
+  derivation, so the same commit of every channel it depends on. guix-subs
+  following the latest Guix while templates follow it separately rarely
+  matches. And locking Guix alone wasn't enough either: the qubes channel
+  still followed its branch, so the Qubes agents were built in the template.
+  Hence `/channel-commits` and `--guix-commit server` locking every channel.
 - **Extra servers go first.** Guix takes each item from the first server in the
   list that has it. An extra server appended after bordeaux and ci was hardly
   used, so qubes-guix now puts it first.
@@ -259,16 +279,11 @@ qube on guix-subs' VLAN. AppVMs reach it through their netvm.
 
 ## To do
 
-- **Publish every channel's commit, not just Guix's.** A qube's firefox-esr only
-  matches if its nonguix commit equals guix-subs' too, and the same goes for
-  qubes and beto packages. `/guix-commit` should become the whole
-  `guix describe -f channels`, and `--guix-commit server` should lock every
-  channel.
 - **HTTPS.** A Let's Encrypt certificate for the name, issued with a DNS
   challenge so the VM needs no inbound access, and nginx on 443. Then tinyproxy
-  only tunnels, as it does for bordeaux. It also protects `/guix-commit`:
+  only tunnels, as it does for bordeaux. It also protects `/channel-commits` and `/guix-commit`:
   substitutes are signed and nars are hash-checked, so plain HTTP is safe
-  for them, but nothing signs the commit. Channel authentication still
+  for them, but nothing signs the commits. Channel authentication still
   rejects a forged commit, yet someone on the path could hold the qubes at
   an old, genuine one.
 - **Building every commit, not nightly:** Cuirass, if nightly turns out too

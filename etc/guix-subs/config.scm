@@ -1,8 +1,8 @@
 ;; guix-subs: a Guix System VM (Proxmox) that builds what Guix qubes need,
 ;; serves this store with 'guix publish' (port 8080), and fronts it with
 ;; nginx on port 80: the store at /, caches of bordeaux and ci at /bordeaux/
-;; and /ci/, and the Guix commit of the last good nightly build at
-;; /guix-commit. See README.md.
+;; and /ci/, and the channel commits of the last good nightly build at
+;; /channel-commits (Guix's alone at /guix-commit). See README.md.
 ;;
 ;; Files next to this one: build-qubes.sh, template.scm, packages,
 ;; beto-ssh.pub (your SSH public key). Install with the stock Guix
@@ -78,6 +78,14 @@ beto	ALL=(ALL) NOPASSWD: ALL
                "proxy_cache_use_stale error timeout updating;"
                "proxy_ignore_headers Cache-Control Expires Set-Cookie;"
                "add_header X-Cache-Status $upstream_cache_status;"))))
+
+;; /NAME: /var/lib/qubes-builds/NAME, as plain text, never cached.
+(define (published-file name)
+  (nginx-location-configuration
+   (uri (string-append "= /" name))
+   (body (list (string-append "alias /var/lib/qubes-builds/" name ";")
+               "default_type text/plain;"
+               "add_header Cache-Control no-cache;"))))
 
 (define %substitute-cache "/var/cache/nginx/guix")
 
@@ -196,13 +204,11 @@ beto	ALL=(ALL) NOPASSWD: ALL
                               (map (lambda (u) (cached-upstream (car u) (cdr u)))
                                    %upstreams)
                               (list
-                                   ;; The Guix commit of the last good
-                                   ;; nightly build (build-qubes.sh).
-                                   (nginx-location-configuration
-                                    (uri "= /guix-commit")
-                                    (body '("alias /var/lib/qubes-builds/guix-commit;"
-                                            "default_type text/plain;"
-                                            "add_header Cache-Control no-cache;")))
+                                   ;; The commits of the last good nightly
+                                   ;; build (build-qubes.sh): every
+                                   ;; channel's, and Guix's alone.
+                                   (published-file "channel-commits")
+                                   (published-file "guix-commit")
                                    (nginx-location-configuration
                                     (uri "/")
                                     (body '("proxy_pass http://127.0.0.1:8080;")))))))))))
