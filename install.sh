@@ -45,14 +45,17 @@ grep -q '^ssh-' "$tmp/beto-ssh.pub" ||
     die "beto-ssh.pub doesn't look like an SSH public key"
 chmod +x "$tmp/build-qubes.sh"
 
-# Release the disk: an earlier attempt may have left /mnt mounted (with
-# cow-store on it), or the installer may have turned on a swap partition.
-herd stop cow-store >/dev/null 2>&1 || true
+# Release what we safely can: /mnt and swap on the disk. If an earlier
+# run started cow-store, the disk stays busy (it holds the installer's
+# /tmp and the store overlay), and only a fresh boot of the installer
+# frees it.
 umount -R /mnt 2>/dev/null || true
 for p in "$part"[0-9]*; do
     [ -b "$p" ] || continue
     swapoff "$p" 2>/dev/null || true
-    umount "$p" 2>/dev/null || true
+    if grep -q "^$p " /proc/mounts; then
+        die "$p is still in use (an earlier run?): reboot the installer and run this again"
+    fi
 done
 
 echo "== partitioning $disk (everything on it is lost)"
