@@ -1,10 +1,11 @@
 ;; What guix-subs builds nightly: a qubes-guix template like the one
-;; qubes-guix-install makes (Xfce, one user), so the Qubes agents and the
-;; desktop are already built when a template updates. It's never booted:
+;; qubes-guix-install makes (xterm, no desktop, one user), so the Qubes
+;; agents are already built when a template updates. It's never booted:
 ;; only the store items matter, so host name, user etc. don't.
 
 (use-modules (gnu) (guix channels) (qubes system))
-(use-service-modules desktop xorg)
+(use-service-modules desktop)
+(use-package-modules xorg)
 
 (qubes-operating-system
  (operating-system
@@ -16,8 +17,8 @@
                  (group "users")
                  (supplementary-groups '("wheel" "netdev" "audio" "video")))
                 %base-user-accounts))
-   (services (append (list (service xfce-desktop-service-type))
-                     %desktop-services))
+   (packages (cons xterm %base-packages))
+   (services %desktop-services)
    (bootloader (bootloader-configuration
                 (bootloader grub-bootloader)
                 (targets '("/dev/xvda"))))
