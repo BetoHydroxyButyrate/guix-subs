@@ -9,6 +9,11 @@
 set -u
 export HOME=/root
 export PATH=/run/current-system/profile/bin:/run/current-system/profile/sbin
+# mcron's environment has no CA certificates for git (Guix's git doesn't
+# look in /etc/ssl/certs by itself; guix pull does).
+export SSL_CERT_DIR=/etc/ssl/certs
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+export GIT_SSL_CAINFO=$SSL_CERT_FILE
 build=${1:-/etc/guix-subs/build-qubes.sh}
 state=/var/lib/guix-subs/qubes-head-tried   # the head last tried here
 log() { echo "$(date -Is) poll: $*"; }

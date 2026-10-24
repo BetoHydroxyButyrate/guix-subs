@@ -31,6 +31,11 @@ for a in "$@"; do
 done
 export HOME=/root
 export PATH=/run/current-system/profile/bin:/run/current-system/profile/sbin
+# mcron's environment has no CA certificates for git (Guix's git doesn't
+# look in /etc/ssl/certs by itself; guix pull does).
+export SSL_CERT_DIR=/etc/ssl/certs
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+export GIT_SSL_CAINFO=$SSL_CERT_FILE
 dir=/etc/guix-subs
 roots=/var/guix/gcroots/qubes-builds
 mkdir -p "$roots"
