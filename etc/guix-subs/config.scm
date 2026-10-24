@@ -10,7 +10,7 @@
 ;;   sudo -H guix pull && sudo guix system reconfigure /etc/guix-subs/config.scm
 
 (use-modules (gnu) (guix channels))
-(use-service-modules base mcron networking shepherd ssh virtualization web)
+(use-service-modules base mcron networking shepherd ssh sysctl virtualization web)
 (use-package-modules version-control)
 
 ;; The name qubes use for this machine: nginx's server_name, and the
@@ -282,7 +282,14 @@ beto	ALL=(ALL) NOPASSWD: ALL
                                 (chown #$%substitute-cache
                                        (passwd:uid nginx) (passwd:gid nginx)))))
           (simple-service 'qubes-builds mcron-service-type
-                          (list build-job poll-job gc-job)))
+                          (list build-job poll-job gc-job))
+          ;; BBR: paced sending. The Qubes CI machine's 1 Gb/s port is
+          ;; behind another switch, across a 10 Gb/s LAG; with cubic, 10 Gb/s
+          ;; bursts into it lost ~8% of packets and nars reached it at
+          ;; 2 MB/s, with BBR ~90 MB/s. (Setting it loads tcp_bbr.)
+          (simple-service 'tcp-bbr sysctl-service-type
+                          '(("net.core.default_qdisc" . "fq")
+                            ("net.ipv4.tcp_congestion_control" . "bbr"))))
     (modify-services %base-services
       (guix-service-type
        config => (guix-configuration
