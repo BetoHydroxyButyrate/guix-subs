@@ -10,7 +10,7 @@
 ;;   sudo -H guix pull && sudo guix system reconfigure /etc/guix-subs/config.scm
 
 (use-modules (gnu) (guix channels))
-(use-service-modules base mcron networking shepherd ssh sysctl virtualization web)
+(use-service-modules base linux mcron networking shepherd ssh virtualization web)
 (use-package-modules version-control)
 
 ;; The name qubes use for this machine: nginx's server_name, and the
@@ -208,6 +208,20 @@ beto	ALL=(ALL) NOPASSWD: ALL
        (apply execl #$(local-file "install-cert.sh" #:recursive? #t)
               "install-cert.sh" (cdr (command-line))))))
 
+(define tcp-bbr-service
+  (shepherd-service
+   (documentation "Use BBR congestion control (and fq) once tcp_bbr is loaded.")
+   (provision '(tcp-bbr))
+   (requirement '(kernel-module-loader))
+   (one-shot? #t)
+   (start #~(lambda _
+              (define (write-proc file value)
+                (call-with-output-file file
+                  (lambda (port) (display value port))))
+              (write-proc "/proc/sys/net/core/default_qdisc" "fq")
+              (write-proc "/proc/sys/net/ipv4/tcp_congestion_control" "bbr")
+              #t))))
+
 (operating-system
   (host-name "guix-subs")
   (sudoers-file %sudoers-specification)
@@ -286,10 +300,12 @@ beto	ALL=(ALL) NOPASSWD: ALL
           ;; BBR: paced sending. The Qubes CI machine's 1 Gb/s port is
           ;; behind another switch, across a 10 Gb/s LAG; with cubic, 10 Gb/s
           ;; bursts into it lost ~8% of packets and nars reached it at
-          ;; 2 MB/s, with BBR ~90 MB/s. (Setting it loads tcp_bbr.)
-          (simple-service 'tcp-bbr sysctl-service-type
-                          '(("net.core.default_qdisc" . "fq")
-                            ("net.ipv4.tcp_congestion_control" . "bbr"))))
+          ;; 2 MB/s, with BBR ~90 MB/s. Not through sysctl-service-type: its
+          ;; service runs before modules can be loaded, so "bbr" isn't there
+          ;; yet. tcp_bbr from the module loader, then set it.
+          (service kernel-module-loader-service-type '("tcp_bbr"))
+          (simple-service 'tcp-bbr shepherd-root-service-type
+                          (list tcp-bbr-service)))
     (modify-services %base-services
       (guix-service-type
        config => (guix-configuration
