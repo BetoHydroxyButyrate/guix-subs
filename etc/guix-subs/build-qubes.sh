@@ -20,7 +20,19 @@
 # published commits then stay a set this server has built, for qubes that
 # lock to them. Without published commits yet, a full run.
 # --no-wait: if another build is running, exit 75 rather than wait for it.
+#
+# Its output goes to /var/log/qubes-builds.log: mcron and CI redirect it
+# there, and run from a terminal it copies itself there (as well as to the
+# terminal).
 set -u
+logfile=/var/log/qubes-builds.log
+if [ -t 1 ] && [ -z "${BUILD_QUBES_LOGGING:-}" ]; then
+    export BUILD_QUBES_LOGGING=1
+    st=$(mktemp)
+    { "$0" "$@"; echo $? > "$st"; } 2>&1 | tee -a "$logfile"
+    rc=$(cat "$st"); rm -f "$st"
+    exit "${rc:-1}"
+fi
 qubes_only=0 wait=1
 for a in "$@"; do
     case $a in

@@ -168,7 +168,9 @@ runs `build-qubes.sh --qubes-only --no-wait`:
   The next commit, or the nightly run, moves on.
 
 To build the current qubes-guix head now, by hand:
-`sudo /etc/guix-subs/build-qubes.sh --qubes-only`.
+`sudo /etc/guix-subs/build-qubes.sh --qubes-only`. Run from a terminal,
+`build-qubes.sh` also appends its output to `/var/log/qubes-builds.log`,
+so no `tee` is needed.
 
 Each result is kept by a symlink in `/var/guix/gcroots/qubes-builds/`. Any
 symlink there is a GC root, and it's replaced only once the new build
