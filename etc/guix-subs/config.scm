@@ -67,10 +67,21 @@ beto	ALL=(ALL) NOPASSWD: ALL
 ;; Cached substitutes keep their upstream signatures, so clients need no
 ;; new key for them (bordeaux's and ci's are authorized by default); only
 ;; this machine's own builds need its key.
+;;
+;; The upstream's name goes through a variable, so nginx looks it up when a
+;; request comes (with the resolver below), not when it loads its
+;; configuration: its config check (nginx-init, which waits for nothing)
+;; and its start then never depend on DNS. With a literal name, a restart
+;; while DNS wasn't up yet (a reconfigure restarting nginx-init and
+;; dns-ready at once) failed the check, and nginx stayed down.
 (define (cached-upstream path host)
   (nginx-location-configuration
    (uri path)
-   (body (list (string-append "proxy_pass https://" host "/;")
+   (body (list (string-append "set $upstream_host " host ";")
+               ;; With a variable, proxy_pass passes the URI as is: strip
+               ;; the location's prefix here instead.
+               (string-append "rewrite ^" path "(.*)$ /$1 break;")
+               "proxy_pass https://$upstream_host;"
                "proxy_ssl_server_name on;"
                (string-append "proxy_set_header Host " host ";")
                "proxy_http_version 1.1;"
@@ -121,6 +132,49 @@ beto	ALL=(ALL) NOPASSWD: ALL
                             ((< i 120) (sleep 1) (loop (+ i 1)))
                             (else (exit 1)))))))
 
+;; nginx's resolver for the upstreams' names: this machine's DNS servers,
+;; from /etc/resolv.conf (DHCP's), as /var/lib/guix-subs/nginx-resolver.conf,
+;; which nginx.conf includes. Written at activation (so the file is there
+;; for nginx's config check), and again by dns-ready, before nginx starts.
+(define %nginx-resolver-file "/var/lib/guix-subs/nginx-resolver.conf")
+
+(define nginx-resolver
+  (program-file
+   "nginx-resolver"
+   #~(begin
+       (use-modules (ice-9 rdelim))
+       (define (nameservers)
+         (or (false-if-exception
+              (call-with-input-file "/etc/resolv.conf"
+                (lambda (port)
+                  (let loop ((acc '()))
+                    (let ((line (read-line port)))
+                      (if (eof-object? line)
+                          (reverse acc)
+                          (loop (let ((words (string-tokenize line)))
+                                  (if (and (= (length words) 2)
+                                           (string=? (car words) "nameserver")
+                                           ;; nginx can't use a link-local
+                                           ;; address's %zone
+                                           (not (string-index (cadr words) #\%)))
+                                      (cons (cadr words) acc)
+                                      acc)))))))))
+             '()))
+       (define (address a)               ; IPv6 in brackets
+         (if (string-index a #\:) (string-append "[" a "]") a))
+       (let ((servers (nameservers))
+             (tmp (string-append #$%nginx-resolver-file ".tmp")))
+         (unless (file-exists? "/var/lib/guix-subs")
+           (mkdir "/var/lib/guix-subs"))
+         (call-with-output-file tmp
+           (lambda (port)
+             (format port "resolver ~a valid=300s ipv6=off;~%"
+                     (if (null? servers)
+                         "127.0.0.1"     ; none known yet: dns-ready rewrites it
+                         (string-join (map address servers) " ")))
+             (display "resolver_timeout 10s;\n" port)))
+         (rename-file tmp #$%nginx-resolver-file)))))
+
 (define dns-ready-service
   (simple-service 'dns-ready shepherd-root-service-type
                   (list (shepherd-service
@@ -129,7 +183,9 @@ beto	ALL=(ALL) NOPASSWD: ALL
                          (requirement '(networking))
                          (one-shot? #t)
                          (start #~(lambda _
-                                    (zero? (system* #$wait-for-dns))))))))
+                                    (and (zero? (system* #$wait-for-dns))
+                                         (zero? (system* #$nginx-resolver)))))))))
+
 
 ;; Nightly: pull, then build a typical template system and the extra
 ;; packages, so they're in the store for 'guix publish'.
@@ -277,7 +333,8 @@ beto	ALL=(ALL) NOPASSWD: ALL
                      (string-append
                       "proxy_cache_path " %substitute-cache
                       " levels=1:2 keys_zone=guix:50m inactive=180d"
-                      " max_size=1000g use_temp_path=off;"))
+                      " max_size=1000g use_temp_path=off;\n"
+                      "include " %nginx-resolver-file ";"))
                     (server-blocks
                      (list (substitute-server '("80") #f)
                            (substitute-server '("443 ssl") #t)))))
@@ -294,7 +351,8 @@ beto	ALL=(ALL) NOPASSWD: ALL
                                           #$%substitute-cache))
                               (let ((nginx (getpwnam "nginx")))
                                 (chown #$%substitute-cache
-                                       (passwd:uid nginx) (passwd:gid nginx)))))
+                                       (passwd:uid nginx) (passwd:gid nginx)))
+                              (system* #$nginx-resolver)))
           (simple-service 'qubes-builds mcron-service-type
                           (list build-job poll-job gc-job))
           ;; BBR: paced sending. The Qubes CI machine's 1 Gb/s port is
