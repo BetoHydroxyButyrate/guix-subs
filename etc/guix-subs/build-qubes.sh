@@ -11,7 +11,24 @@
 # channel's in channel-commits (nginx: /channel-commits), Guix's alone in
 # guix-commit (/guix-commit), for qubes-guix-update --guix-commit server
 # and qubes-guix-create.
+#
+#   build-qubes.sh [--qubes-only] [--no-wait]
+#
+# --qubes-only: the qubes channel at its head, every other channel at the
+# commits last published (channel-commits), so only what depends on qubes-
+# guix is built; run by poll-qubes.sh on each new qubes-guix commit. The
+# published commits then stay a set this server has built, for qubes that
+# lock to them. Without published commits yet, a full run.
+# --no-wait: if another build is running, exit 75 rather than wait for it.
 set -u
+qubes_only=0 wait=1
+for a in "$@"; do
+    case $a in
+        --qubes-only) qubes_only=1;;
+        --no-wait) wait=0;;
+        *) echo "build-qubes.sh: unknown argument $a" >&2; exit 2;;
+    esac
+done
 export HOME=/root
 export PATH=/run/current-system/profile/bin:/run/current-system/profile/sbin
 dir=/etc/guix-subs
@@ -19,6 +36,15 @@ roots=/var/guix/gcroots/qubes-builds
 mkdir -p "$roots"
 template_ok=0
 log() { echo "$(date -Is) $*"; }
+
+# One build at a time (the nightly run, poll-qubes.sh, a CI run's sync).
+mkdir -p /var/lib/guix-subs
+exec 9>/var/lib/guix-subs/build.lock
+if [ "$wait" = 1 ]; then
+    flock 9
+elif ! flock -n 9; then
+    log "another build is running"; exit 75
+fi
 
 # keep NAME OUTPUT...: point NAME (NAME-1, NAME-2... for more outputs) at
 # the new outputs, dropping the previous build's links.
@@ -37,8 +63,31 @@ keep() {
 # beto channels, so no "not trusted" warnings), else the system's.
 guix=/root/.config/guix/current/bin/guix
 [ -x "$guix" ] || guix=guix
-log "pull"
-"$guix" pull || { log "pull failed"; exit 1; }
+published=/var/lib/qubes-builds/channel-commits
+if [ "$qubes_only" = 1 ] && [ -s "$published" ]; then
+    # /etc/guix/channels.scm (one expression, a list of channels), every
+    # channel but qubes pinned to its published commit.
+    pins=$(awk '$1 != "qubes" && $2 ~ /^[0-9a-f]+$/ {printf "(%s . \"%s\") ", $1, $2}' "$published")
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    {
+        echo ";; Written by build-qubes.sh --qubes-only."
+        echo "(let ((pins '($pins)))"
+        echo "  (map (lambda (c)"
+        echo "         (let ((pin (assq-ref pins (channel-name c))))"
+        echo "           (if pin (channel (inherit c) (commit pin)) c)))"
+        sed 's/^/       /' /etc/guix/channels.scm
+        echo "))"
+    } > "$tmp/channels.scm"
+    log "pull: qubes at its head, the others at the published commits"
+    # --allow-downgrades: root's Guix may be newer than the published
+    # commits, if a nightly build failed after its pull.
+    "$guix" pull --allow-downgrades -C "$tmp/channels.scm" || { log "pull failed"; exit 1; }
+else
+    [ "$qubes_only" = 1 ] && log "no published commits yet: a full run"
+    log "pull"
+    "$guix" pull || { log "pull failed"; exit 1; }
+fi
 guix=/root/.config/guix/current/bin/guix
 "$guix" describe
 

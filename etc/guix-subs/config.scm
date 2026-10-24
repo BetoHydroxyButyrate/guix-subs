@@ -138,6 +138,15 @@ beto	ALL=(ALL) NOPASSWD: ALL
          (string-append #$(local-file "build-qubes.sh" #:recursive? #t)
                         " >> /var/log/qubes-builds.log 2>&1")))
 
+;; Every 10 minutes: a new qubes-guix commit is built at once, with the
+;; other channels at the published commits (build-qubes.sh --qubes-only);
+;; the nightly run moves those.
+(define poll-job
+  #~(job "*/10 * * * *"
+         (string-append #$(local-file "poll-qubes.sh" #:recursive? #t)
+                        " " #$(local-file "build-qubes.sh" #:recursive? #t)
+                        " >> /var/log/qubes-builds.log 2>&1")))
+
 ;; Weekly: drop root's guix generations older than a month and collect
 ;; garbage until 150 GiB are free. The current builds are GC roots.
 (define gc-job
@@ -273,7 +282,7 @@ beto	ALL=(ALL) NOPASSWD: ALL
                                 (chown #$%substitute-cache
                                        (passwd:uid nginx) (passwd:gid nginx)))))
           (simple-service 'qubes-builds mcron-service-type
-                          (list build-job gc-job)))
+                          (list build-job poll-job gc-job)))
     (modify-services %base-services
       (guix-service-type
        config => (guix-configuration

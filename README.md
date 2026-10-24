@@ -36,6 +36,7 @@ http://guix-subs.example.lan/guix-commit      Guix's commit alone
 etc/guix-subs/          copied to /etc/guix-subs on the VM
   config.scm            the operating system
   build-qubes.sh        nightly job (mcron, 02:00): pull, build, publish the commit
+  poll-qubes.sh         every 10 min (mcron): build a new qubes-guix commit at once
   template.scm          the template system it builds: Xfce + qubes-guix
   packages              extra packages to build or fetch nightly
   install-cert.sh       installs the TLS certificate the Proxmox host pushes in
@@ -143,6 +144,31 @@ substitutes, and firefox-esr comes from nonguix's farm. Later runs are at
 02:00 nightly. A weekly job at 04:00 Sunday deletes root's Guix generations
 older than a month and runs `guix gc -F 150G`: it collects garbage until at
 least 150 GiB of the disk are free.
+
+**Each new qubes-guix commit** is built within about 10 minutes, without
+waiting for the night. `poll-qubes.sh` (mcron, every 10 minutes) compares the
+qubes channel's branch head with the last one it tried. When it has moved, it
+runs `build-qubes.sh --qubes-only --no-wait`:
+
+- **The pull:** qubes-guix at its head, and every other channel (Guix,
+  beto, nonguix) pinned to the commits last published. Only what depends
+  on qubes-guix is built: the Qubes packages, the pulled Guix with the
+  qubes channel, and the template system.
+- **The publish:** as usual, `channel-commits` is published at the end,
+  with the new qubes commit and the other channels unchanged. So it's
+  always a set this server has built, and `qubes-guix-update --guix-commit
+  server -r` in a template gets substitutes for all of it. The nightly
+  run moves the other channels forward.
+- **One build at a time:** `build-qubes.sh` holds
+  `/var/lib/guix-subs/build.lock`. The nightly run and a CI run's sync
+  (`sudo build-qubes.sh`) wait for a build in progress; the poll skips and
+  tries again next time (`--no-wait`, exit 75).
+- **A failing commit isn't retried every 10 minutes.** The poll records
+  each head it tried, good or not, in `/var/lib/guix-subs/qubes-head-tried`.
+  The next commit, or the nightly run, moves on.
+
+To build the current qubes-guix head now, by hand:
+`sudo /etc/guix-subs/build-qubes.sh --qubes-only`.
 
 Each result is kept by a symlink in `/var/guix/gcroots/qubes-builds/`. Any
 symlink there is a GC root, and it's replaced only once the new build
@@ -336,7 +362,7 @@ and `route53:ListHostedZonesByName`.
 
 ## To do
 
-- **Building every commit, not nightly:** Cuirass, if nightly turns out too
-  coarse.
+- **Building every commit of every channel:** Cuirass, if per-commit
+  qubes-guix plus nightly for the rest turns out too coarse.
 - **More build power:** `guix offload` to a Guix VM on the TrueNAS box (40
   cores), if one build machine isn't enough.
