@@ -231,6 +231,14 @@ beto	ALL=(ALL) NOPASSWD: ALL
       ;; channel's, and Guix's alone.
       (published-file "channel-commits")
       (published-file "guix-commit")
+      ;; The key this machine signs its substitutes with (guix publish's),
+      ;; for clients to fetch and check by its fingerprint: qubes-guix's
+      ;; qg-config, before it authorizes the key in new qubes.
+      (nginx-location-configuration
+       (uri "= /signing-key.pub")
+       (body '("alias /etc/guix/signing-key.pub;"
+               "default_type text/plain;"
+               "add_header Cache-Control no-cache;")))
       (nginx-location-configuration
        (uri "/")
        (body '("proxy_pass http://127.0.0.1:8080;"))))))))
