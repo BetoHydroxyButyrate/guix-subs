@@ -13,8 +13,10 @@ curl
 openssh
 beto-appvm-defaults
 fish
+zsh
 tmux
 file
 nftables
+xrdb
 # nonguix (substitutes.nonguix.org):
 firefox-esr
